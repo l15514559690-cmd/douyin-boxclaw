@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cursor/
+
+# macOS
+.DS_Store
+*.app
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Runtime data (user profiles — never commit)
+Douyin_Profiles/
+
+# Deprecated files
+app.py
+templates/

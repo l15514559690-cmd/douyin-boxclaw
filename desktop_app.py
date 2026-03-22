@@ -4,6 +4,7 @@ import re
 import shutil
 import sys
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -64,16 +65,39 @@ def _api_health():
 # ═══════════════════════════════════════════════════════════════
 from PySide6.QtCore import (
     Qt, QUrl, QTimer, QSize, QMimeData, QPointF, QPoint,
-    QPropertyAnimation, QEasingCurve, QRectF, Property, Signal,
+    QPropertyAnimation, QEasingCurve, QRectF, Property, Signal, QDateTime, QLocale,
 )
 from PySide6.QtGui import (
     QFont, QDropEvent, QDragEnterEvent, QDragMoveEvent,
     QPainter, QColor, QBrush,
 )
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QInputDialog,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QPushButton, QSplitter, QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
+    QAbstractItemView,
+    QApplication,
+    QButtonGroup,
+    QComboBox,
+    QDateTimeEdit,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QSplitter,
+    QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 from PySide6.QtWebEngineCore import (
     QWebEnginePage, QWebEngineProfile, QWebEngineScript, QWebEngineSettings,
@@ -133,6 +157,389 @@ class ToggleSwitch(QWidget):
         p.end()
 
 
+def _zh_datetime_format(dt: QDateTime) -> str:
+    if not isinstance(dt, QDateTime) or not dt.isValid():
+        return ""
+    loc = QLocale(QLocale.Chinese, QLocale.China)
+    return loc.toString(dt, "yyyy年M月d日 HH:mm")
+
+
+SCHEDULER_DIALOG_QSS = """
+QDialog, QWidget#DialogRoot { background: #09090B; color: #FAFAFA; }
+QLabel { color: #FAFAFA; font-size: 12px; background: transparent; }
+QComboBox, QLineEdit, QTextEdit, QDateTimeEdit {
+    background: #18181B; color: #FAFAFA; border: 1px solid #27272A; border-radius: 8px;
+    padding: 8px 10px; min-height: 20px;
+}
+QComboBox QAbstractItemView { background: #18181B; color: #E4E4E7; border: 1px solid #27272A; }
+QRadioButton { color: #A1A1AA; spacing: 8px; background: transparent; }
+QPushButton#DialogPrimaryBtn {
+    background: #4F46E5; color: #FFF; border: none; border-radius: 8px;
+    padding: 10px 18px; font-weight: 600; font-size: 12px;
+}
+QPushButton#DialogPrimaryBtn:hover { background: #6366F1; }
+QPushButton#DialogDangerBtn {
+    background: #18181B; color: #A1A1AA; border: 1px solid #27272A; border-radius: 8px;
+    padding: 10px 18px; font-weight: 600; font-size: 12px;
+}
+QPushButton#DialogDangerBtn:hover {
+    background: rgba(239, 68, 68, 0.15); color: #EF4444;
+    border-color: rgba(239, 68, 68, 0.45);
+}
+QPushButton#DialogGhostBtn {
+    background: #18181B; color: #A1A1AA; border: 1px solid #27272A; border-radius: 8px;
+    padding: 10px 18px; font-weight: 600; font-size: 12px;
+}
+QTableWidget {
+    background: #121214; color: #E4E4E7; border: 1px solid #27272A; border-radius: 8px;
+    gridline-color: transparent; outline: none;
+}
+QTableWidget::item:selected { background: rgba(99, 102, 241, 0.15); color: #FAFAFA; }
+QHeaderView::section {
+    background: #121214; color: #A1A1AA; padding: 8px; border: none;
+    border-bottom: 1px solid #27272A; font-weight: 600; font-size: 11px;
+}
+"""
+
+
+class AutoPublishDialog(QDialog):
+    """创建自动发布任务：立即/定时、图文或视频。"""
+
+    def __init__(self, account_list: QListWidget, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("\u23f1\ufe0f \u521b\u5efa\u81ea\u52a8\u53d1\u5e03\u4efb\u52a1")
+        self.setFixedSize(520, 600)
+        self.setModal(True)
+        self.setStyleSheet(SCHEDULER_DIALOG_QSS)
+        self._account_list = account_list
+        self.payload = None
+
+        root = QWidget(self)
+        root.setObjectName("DialogRoot")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 20, 20, 16)
+        lay.setSpacing(0)
+        lay.addWidget(root)
+        rl = QVBoxLayout(root)
+        rl.setSpacing(12)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        form.setLabelAlignment(Qt.AlignRight)
+
+        self._combo = QComboBox()
+        self._combo.setMinimumHeight(36)
+        form.addRow(QLabel("\u9009\u62e9\u8d26\u53f7"), self._combo)
+
+        type_row = QHBoxLayout()
+        self._radio_video = QRadioButton("\u89c6\u9891")
+        self._radio_image = QRadioButton("\u56fe\u6587")
+        self._radio_video.setChecked(True)
+        self._grp_type = QButtonGroup(self)
+        self._grp_type.addButton(self._radio_video, 0)
+        self._grp_type.addButton(self._radio_image, 1)
+        type_row.addWidget(self._radio_video)
+        type_row.addWidget(self._radio_image)
+        type_row.addStretch()
+        form.addRow(QLabel("\u53d1\u5e03\u7c7b\u578b"), type_row)
+
+        file_row = QHBoxLayout()
+        self._file_edit = QLineEdit()
+        self._file_edit.setReadOnly(True)
+        self._file_edit.setPlaceholderText(
+            "\u70b9\u51fb\u53f3\u4fa7\u6309\u94ae\u9009\u62e9\u6587\u4ef6\u2026"
+        )
+        self._browse_btn = QPushButton("\u6d4f\u89c8\u2026")
+        self._browse_btn.setObjectName("DialogGhostBtn")
+        self._browse_btn.setFixedWidth(72)
+        file_row.addWidget(self._file_edit, 1)
+        file_row.addWidget(self._browse_btn)
+        form.addRow(QLabel("\u6587\u4ef6"), file_row)
+
+        self._caption = QTextEdit()
+        self._caption.setFixedHeight(100)
+        self._caption.setPlaceholderText("\u8f93\u5165\u53d1\u5e03\u6587\u6848\u2026")
+        form.addRow(QLabel("\u53d1\u5e03\u6587\u6848"), self._caption)
+
+        mode_row = QHBoxLayout()
+        self._radio_now = QRadioButton("\u7acb\u5373\u53d1\u5e03")
+        self._radio_later = QRadioButton("\u5b9a\u65f6\u53d1\u5e03")
+        self._radio_now.setChecked(True)
+        self._grp_mode = QButtonGroup(self)
+        self._grp_mode.addButton(self._radio_now, 0)
+        self._grp_mode.addButton(self._radio_later, 1)
+        mode_row.addWidget(self._radio_now)
+        mode_row.addWidget(self._radio_later)
+        mode_row.addStretch()
+        form.addRow(QLabel("\u6267\u884c\u6a21\u5f0f"), mode_row)
+
+        self._dt = QDateTimeEdit()
+        self._dt.setCalendarPopup(True)
+        _zh = QLocale(QLocale.Chinese, QLocale.China)
+        self._dt.setLocale(_zh)
+        self._dt.setDisplayFormat("yyyy年M月d日 HH:mm")
+        self._dt.setDateTime(QDateTime.currentDateTime().addSecs(600))
+        self._dt.setVisible(False)
+        self._dt_label = QLabel("\u6267\u884c\u65f6\u95f4")
+        self._dt_label.setVisible(False)
+        form.addRow(self._dt_label, self._dt)
+
+        rl.addLayout(form)
+
+        self._radio_image.toggled.connect(self._on_type_changed)
+        self._radio_video.toggled.connect(self._on_type_changed)
+        self._radio_now.toggled.connect(self._on_mode_changed)
+        self._radio_later.toggled.connect(self._on_mode_changed)
+        self._browse_btn.clicked.connect(self._browse)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("\u53d6\u6d88")
+        cancel_btn.setObjectName("DialogDangerBtn")
+        self._ok_btn = QPushButton("\u7acb\u5373\u53d1\u5e03")
+        self._ok_btn.setObjectName("DialogPrimaryBtn")
+        cancel_btn.clicked.connect(self.reject)
+        self._ok_btn.clicked.connect(self._try_accept)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(self._ok_btn)
+        rl.addLayout(btn_row)
+
+        self._on_mode_changed()
+        self._on_type_changed()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._populate_accounts()
+        self._on_mode_changed()
+
+    def _populate_accounts(self):
+        cur_dn = None
+        ci = self._account_list.currentItem()
+        if ci is not None:
+            cur_dn = ci.data(Qt.UserRole)
+        self._combo.clear()
+        for i in range(self._account_list.count()):
+            item = self._account_list.item(i)
+            if item is None:
+                continue
+            dn = item.data(Qt.UserRole)
+            self._combo.addItem(item.text(), dn)
+        if cur_dn is not None:
+            for i in range(self._combo.count()):
+                if self._combo.itemData(i) == cur_dn:
+                    self._combo.setCurrentIndex(i)
+                    break
+
+    def _on_type_changed(self):
+        self._file_edit.clear()
+
+    def _on_mode_changed(self):
+        sched = self._radio_later.isChecked()
+        self._dt.setVisible(sched)
+        self._dt_label.setVisible(sched)
+        if self._radio_now.isChecked():
+            self._ok_btn.setText("\u7acb\u5373\u53d1\u5e03")
+        else:
+            self._ok_btn.setText("\u52a0\u5165\u5b9a\u65f6\u961f\u5217")
+
+    def _browse(self):
+        if self._radio_video.isChecked():
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "\u9009\u62e9\u89c6\u9891",
+                "",
+                "Video (*.mp4 *.mov *.mkv *.avi *.webm);;All (*.*)",
+            )
+            if path:
+                self._file_edit.setText(path)
+        else:
+            paths, _ = QFileDialog.getOpenFileNames(
+                self,
+                "\u9009\u62e9\u56fe\u7247",
+                "",
+                "Images (*.png *.jpg *.jpeg *.webp *.gif);;All (*.*)",
+            )
+            if paths:
+                self._file_edit.setText(", ".join(paths))
+
+    def _try_accept(self):
+        if self._combo.count() == 0 or self._combo.currentData() is None:
+            QMessageBox.warning(
+                self,
+                "\u63d0\u793a",
+                "\u8bf7\u5148\u5728\u4e3b\u754c\u9762\u521b\u5efa\u8d26\u53f7\u3002",
+            )
+            return
+        account_dir = self._combo.currentData()
+        raw_files = self._file_edit.text().strip()
+        if not raw_files:
+            QMessageBox.warning(
+                self, "\u63d0\u793a", "\u8bf7\u9009\u62e9\u8981\u53d1\u5e03\u7684\u6587\u4ef6\u3002"
+            )
+            return
+
+        post_type = "image" if self._radio_image.isChecked() else "video"
+        if post_type == "video":
+            file_paths = raw_files
+        else:
+            file_paths = [p.strip() for p in raw_files.split(",") if p.strip()]
+
+        caption = self._caption.toPlainText()
+        exec_later = self._radio_later.isChecked()
+        when = self._dt.dateTime()
+
+        if exec_later:
+            if when <= QDateTime.currentDateTime():
+                QMessageBox.warning(
+                    self,
+                    "\u63d0\u793a",
+                    "\u5b9a\u65f6\u65f6\u95f4\u5fc5\u987b\u665a\u4e8e\u5f53\u524d\u65f6\u95f4\u3002",
+                )
+                return
+
+        self.payload = {
+            "id": str(uuid.uuid4()),
+            "account": account_dir,
+            "post_type": post_type,
+            "file_paths": file_paths,
+            "caption": caption,
+            "time": when,
+            "execution_mode": "scheduled" if exec_later else "immediate",
+        }
+        self.accept()
+
+
+class TaskQueueDialog(QDialog):
+    """排期管理：表格、立即执行、取消、刷新。"""
+
+    def __init__(self, scheduled_tasks_ref: list, publish_callback, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(
+            "\U0001f4cb \u81ea\u52a8\u5316\u4efb\u52a1\u6392\u671f\u4e2d\u5fc3"
+        )
+        self.resize(700, 400)
+        self.setMinimumSize(560, 320)
+        self.setModal(True)
+        self.setStyleSheet(SCHEDULER_DIALOG_QSS)
+        self._tasks = scheduled_tasks_ref
+        self._publish = publish_callback
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 12)
+        lay.setSpacing(10)
+
+        self._table = QTableWidget(0, 5)
+        self._table.setObjectName("TaskQueueTable")
+        self._table.setHorizontalHeaderLabels(
+            [
+                "ID",
+                "\u8ba1\u5212\u65f6\u95f4",
+                "\u8d26\u53f7",
+                "\u7c7b\u578b",
+                "\u6587\u6848\u9884\u89c8",
+            ]
+        )
+        self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setColumnHidden(0, True)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        lay.addWidget(self._table, 1)
+
+        btn_row = QHBoxLayout()
+        refresh_btn = QPushButton("\U0001f504 \u5237\u65b0\u5217\u8868")
+        refresh_btn.setObjectName("DialogGhostBtn")
+        run_btn = QPushButton("\U0001f680 \u7acb\u5373\u6267\u884c\u9009\u4e2d\u4efb\u52a1")
+        run_btn.setObjectName("DialogPrimaryBtn")
+        cancel_btn = QPushButton("\u274c \u53d6\u6d88\u9009\u4e2d\u4efb\u52a1")
+        cancel_btn.setObjectName("DialogDangerBtn")
+        refresh_btn.clicked.connect(self.load_data)
+        run_btn.clicked.connect(self._run_selected)
+        cancel_btn.clicked.connect(self._cancel_selected)
+        btn_row.addWidget(refresh_btn)
+        btn_row.addWidget(run_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(cancel_btn)
+        lay.addLayout(btn_row)
+
+        self.load_data()
+
+    def load_data(self):
+        self._table.setRowCount(0)
+        sorted_tasks = sorted(
+            self._tasks,
+            key=lambda t: (
+                t["time"].toMSecsSinceEpoch()
+                if isinstance(t["time"], QDateTime)
+                else 0
+            ),
+        )
+        for t in sorted_tasks:
+            r = self._table.rowCount()
+            self._table.insertRow(r)
+            tid = t.get("id", "")
+            self._table.setItem(r, 0, QTableWidgetItem(tid))
+            tm = t["time"]
+            ts = _zh_datetime_format(tm) if isinstance(tm, QDateTime) else str(tm)
+            self._table.setItem(r, 1, QTableWidgetItem(ts))
+            self._table.setItem(r, 2, QTableWidgetItem(str(t.get("account", ""))))
+            pt = t.get("post_type", "video")
+            self._table.setItem(
+                r, 3, QTableWidgetItem("\u56fe\u6587" if pt == "image" else "\u89c6\u9891")
+            )
+            cap = t.get("caption", "") or ""
+            prev = cap if len(cap) <= 48 else cap[:45] + "..."
+            self._table.setItem(r, 4, QTableWidgetItem(prev))
+
+    def _selected_task_id(self):
+        sel = self._table.selectionModel().selectedRows()
+        if not sel:
+            QMessageBox.information(
+                self,
+                "\u63d0\u793a",
+                "\u8bf7\u5148\u9009\u62e9\u4e00\u884c\u3002",
+            )
+            return None
+        row = sel[0].row()
+        it = self._table.item(row, 0)
+        return it.text() if it else None
+
+    def _find_and_remove(self, tid: str):
+        for i, t in enumerate(self._tasks):
+            if t.get("id") == tid:
+                return self._tasks.pop(i)
+        return None
+
+    def _run_selected(self):
+        tid = self._selected_task_id()
+        if tid is None:
+            return
+        task = self._find_and_remove(tid)
+        if task is None:
+            QMessageBox.warning(self, "\u63d0\u793a", "\u672a\u627e\u5230\u8be5\u4efb\u52a1\u3002")
+            self.load_data()
+            return
+        self._publish(
+            task["account"],
+            task["file_paths"],
+            task.get("caption", ""),
+            task.get("post_type", "video"),
+        )
+        self.load_data()
+
+    def _cancel_selected(self):
+        tid = self._selected_task_id()
+        if tid is None:
+            return
+        if self._find_and_remove(tid) is None:
+            QMessageBox.warning(self, "\u63d0\u793a", "\u672a\u627e\u5230\u8be5\u4efb\u52a1\u3002")
+        self.load_data()
+
+
 # ═══════════════════════════════════════════════════════════════
 #  主程序
 # ═══════════════════════════════════════════════════════════════
@@ -170,6 +577,7 @@ def main() -> int:
 
     qapp = QApplication(sys.argv)
     qapp.setApplicationName(APP_NAME)
+    QLocale.setDefault(QLocale(QLocale.Chinese, QLocale.China))
 
     if sys.platform == "win32":
         _primary_font = "Microsoft YaHei"
@@ -186,6 +594,8 @@ def main() -> int:
     dir_to_display: dict = {}
 
     _api_thread_started = False
+
+    scheduled_tasks = []
 
     # ── 主窗口 ──
     window = QWidget()
@@ -256,6 +666,30 @@ def main() -> int:
     btn_row_layout.addWidget(rename_btn, 1)
     btn_row_layout.addWidget(del_btn, 1)
     sb_layout.addWidget(btn_row)
+
+    sb_layout.addSpacing(10)
+    scheduler_panel = QWidget()
+    scheduler_panel.setObjectName("schedulerPanel")
+    spl = QVBoxLayout(scheduler_panel)
+    spl.setContentsMargins(0, 0, 0, 0)
+    spl.setSpacing(8)
+    btn_create_task = QPushButton(
+        "\u23f1\ufe0f \u521b\u5efa\u81ea\u52a8\u4efb\u52a1"
+    )
+    btn_create_task.setObjectName("btnCreateTask")
+    btn_create_task.setToolTip(
+        "\u521b\u5efa\u7acb\u5373\u6216\u5b9a\u65f6\u53d1\u5e03\u4efb\u52a1"
+    )
+    btn_manage_tasks = QPushButton(
+        "\U0001f4cb \u6392\u671f\u7ba1\u7406"
+    )
+    btn_manage_tasks.setObjectName("btnManageTasks")
+    btn_manage_tasks.setToolTip(
+        "\u67e5\u770b\u3001\u7acb\u5373\u6267\u884c\u6216\u53d6\u6d88\u5df2\u6392\u671f\u4efb\u52a1"
+    )
+    spl.addWidget(btn_create_task)
+    spl.addWidget(btn_manage_tasks)
+    sb_layout.addWidget(scheduler_panel)
 
     # ── 侧边栏底部：API 开关 + 缓存清理 ──
     sb_layout.addSpacing(14)
@@ -568,6 +1002,27 @@ def main() -> int:
         }}
         #delBtn:pressed {{
             background: rgba(239, 68, 68, 0.22);
+        }}
+
+        #schedulerPanel {{ background: transparent; }}
+        #btnCreateTask, #btnManageTasks {{
+            background: #18181B;
+            color: #E4E4E7;
+            border: 1px solid #27272A;
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }}
+        #btnCreateTask:hover {{
+            background: #4F46E5;
+            color: #FFFFFF;
+            border-color: #4F46E5;
+        }}
+        #btnManageTasks:hover {{
+            background: rgba(99, 102, 241, 0.18);
+            color: #A5B4FC;
+            border-color: rgba(99, 102, 241, 0.45);
         }}
 
         /* ── 侧边栏底部控件 ── */
@@ -1356,6 +1811,86 @@ def main() -> int:
 
         QTimer.singleShot(8000, do_file_drop)
 
+    def on_create_scheduled_task():
+        dlg = AutoPublishDialog(account_list, window)
+        if dlg.exec() != QDialog.Accepted or dlg.payload is None:
+            return
+        pl = dlg.payload
+        if pl["execution_mode"] == "immediate":
+            handle_openclaw_publish(
+                pl["account"],
+                pl["file_paths"],
+                pl["caption"],
+                pl["post_type"],
+            )
+            show_toast(
+                "\u2713  \u5df2\u89e6\u53d1\u7acb\u5373\u53d1\u5e03",
+                "#6366F1",
+                3200,
+            )
+        else:
+            scheduled_tasks.append(
+                {
+                    "id": pl["id"],
+                    "account": pl["account"],
+                    "post_type": pl["post_type"],
+                    "file_paths": pl["file_paths"],
+                    "caption": pl["caption"],
+                    "time": pl["time"],
+                }
+            )
+            QMessageBox.information(
+                window,
+                "\u6392\u671f\u4e2d\u5fc3",
+                "\u5df2\u52a0\u5165\u540e\u53f0\u961f\u5217\uff0c\u5230\u8fbe\u8ba1\u5212\u65f6\u95f4\u540e\u81ea\u52a8\u6267\u884c\u3002",
+            )
+            show_toast(
+                "\u23f1\ufe0f  \u5df2\u52a0\u5165\u5b9a\u65f6\u961f\u5217",
+                "#818CF8",
+                3000,
+            )
+
+    def on_open_task_queue():
+        tq = TaskQueueDialog(scheduled_tasks, handle_openclaw_publish, window)
+        tq.exec()
+
+    schedule_timer = QTimer()
+    schedule_timer.setInterval(1000)
+
+    def schedule_tick():
+        now = QDateTime.currentDateTime()
+        due = []
+        remain = []
+        for t in scheduled_tasks:
+            tm = t.get("time")
+            if isinstance(tm, QDateTime) and tm <= now:
+                due.append(t)
+            else:
+                remain.append(t)
+        scheduled_tasks[:] = remain
+        due.sort(
+            key=lambda x: (
+                x["time"].toMSecsSinceEpoch()
+                if isinstance(x.get("time"), QDateTime)
+                else 0,
+                x.get("id", ""),
+            )
+        )
+        for t in due:
+            api_log(
+                f"\u23f0 \u5b9a\u65f6\u8c03\u5ea6: id={t.get('id', '')} "
+                f"account={t.get('account', '')}"
+            )
+            handle_openclaw_publish(
+                t["account"],
+                t["file_paths"],
+                t.get("caption", ""),
+                t.get("post_type", "video"),
+            )
+
+    schedule_timer.timeout.connect(schedule_tick)
+    schedule_timer.start()
+
     # ── 主线程轮询队列（线程安全的跨线程通信） ──
     def poll_publish_queue():
         while not _publish_queue.empty():
@@ -1399,6 +1934,8 @@ def main() -> int:
     input_field.returnPressed.connect(on_add)
     api_checkbox.toggled.connect(toggle_api_service)
     clear_cache_btn.clicked.connect(on_clear_cache)
+    btn_create_task.clicked.connect(on_create_scheduled_task)
+    btn_manage_tasks.clicked.connect(on_open_task_queue)
 
     # ── \u52a0\u8f7d\u5df2\u6709\u8d26\u53f7 ──
     existing = sorted(
@@ -1416,6 +1953,7 @@ def main() -> int:
     # ── 退出清理（防止 QTimer / WebEngine 残留导致 abort） ──
     def _on_about_to_quit():
         queue_poll_timer.stop()
+        schedule_timer.stop()
         for _name, prof in profile_cache.items():
             prof.clearHttpCache()
 
