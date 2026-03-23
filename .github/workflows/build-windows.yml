@@ -1,0 +1,61 @@
+# Builds Windows portable folder (PyInstaller + QtWebEngine). Artifact = zip for download.
+# Windows users: GitHub repo -> Actions -> latest green run -> Artifacts -> download zip.
+
+name: Build Windows (portable)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'desktop_app.py'
+      - 'windows_build.spec'
+      - 'requirements.txt'
+      - '.github/workflows/build-windows.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install -r requirements.txt
+          pip install pyinstaller pyinstaller-hooks-contrib
+
+      - name: PyInstaller
+        env:
+          PYTHONUTF8: '1'
+        run: python -m PyInstaller --noconfirm --clean windows_build.spec
+
+      - name: Add RUN_APP.bat and readme
+        shell: cmd
+        run: |
+          cd dist\DouyinMatrix
+          (
+          echo @echo off
+          echo cd /d "%%~dp0"
+          echo start "" "%%~dp0DouyinMatrix.exe"
+          ) > RUN_APP.bat
+          cd ..\..
+          echo Windows portable build from GitHub Actions. Extract entire folder, run DouyinMatrix.exe> dist\DouyinMatrix\README_WINDOWS.txt
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path dist/DouyinMatrix -DestinationPath DouyinMatrix_Windows.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DouyinMatrix_Windows
+          path: DouyinMatrix_Windows.zip
+          retention-days: 90

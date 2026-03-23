@@ -23,10 +23,6 @@ env/
 .DS_Store
 *.app
 
-# Windows
-Thumbs.db
-Desktop.ini
-
 # Runtime data (user profiles — never commit)
 Douyin_Profiles/
 
