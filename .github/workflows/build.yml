@@ -23,7 +23,7 @@ jobs:
         pip install PySide6 pyngrok flask requests pyinstaller
         
     - name: Build EXE with PyInstaller
-      run: pyinstaller --noconfirm --windowed --name "DouyinBoxClaw" app.py
+      run: pyinstaller --noconfirm --windowed --name "DouyinBoxClaw" desktop_app.py
         
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
