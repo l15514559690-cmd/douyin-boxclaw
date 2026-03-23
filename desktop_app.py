@@ -208,6 +208,8 @@ def main() -> int:
     views: dict = {}
     page_indices: dict = {}
     dir_to_display: dict = {}
+    # 内存排期队列（本次运行有效；与 README 描述一致）
+    scheduled_tasks: list = []
 
     _api_thread_started = False
 
@@ -329,6 +331,19 @@ def main() -> int:
     clear_cache_btn.setObjectName("clearCacheBtn")
     clear_cache_btn.setToolTip("\u6e05\u7406\u6240\u6709\u8d26\u53f7\u7684 HTTP \u7f13\u5b58\uff08\u4e0d\u5f71\u54cd\u767b\u5f55\u72b6\u6001\uff09")
     sb_layout.addWidget(clear_cache_btn)
+
+    sb_layout.addSpacing(8)
+
+    btn_create_task = QPushButton("\u23f0 \u521b\u5efa\u81ea\u52a8\u4efb\u52a1")
+    btn_create_task.setObjectName("scheduleCreateBtn")
+    btn_create_task.setToolTip(
+        "\u521b\u5efa\u7acb\u5373\u6216\u5b9a\u65f6\u53d1\u5e03\u4efb\u52a1\uff08\u4e0e API \u5171\u7528\u81ea\u52a8\u5316\u903b\u8f91\uff09"
+    )
+    btn_manage_tasks = QPushButton("\U0001f4cb \u6392\u671f\u7ba1\u7406")
+    btn_manage_tasks.setObjectName("scheduleManageBtn")
+    btn_manage_tasks.setToolTip("\u67e5\u770b\u3001\u53d6\u6d88\u6216\u7acb\u5373\u6267\u884c\u5f85\u53d1\u5e03\u4efb\u52a1")
+    sb_layout.addWidget(btn_create_task)
+    sb_layout.addWidget(btn_manage_tasks)
 
     sb_layout.addSpacing(6)
     powered_label = QLabel("Powered by QtWebEngine")
@@ -642,6 +657,27 @@ def main() -> int:
             color: #F59E0B;
             border-color: rgba(245, 158, 11, 0.3);
         }}
+
+        #scheduleCreateBtn, #scheduleManageBtn {{
+            background: #18181B;
+            color: #A1A1AA;
+            border: 1px solid #27272A;
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-size: 11px;
+            font-weight: 600;
+        }}
+        #scheduleCreateBtn:hover {{
+            background: rgba(99, 102, 241, 0.15);
+            color: #818CF8;
+            border-color: rgba(99, 102, 241, 0.35);
+        }}
+        #scheduleManageBtn:hover {{
+            background: rgba(34, 197, 94, 0.12);
+            color: #22C55E;
+            border-color: rgba(34, 197, 94, 0.3);
+        }}
+
         #poweredLabel {{
             color: #27272A;
             font-size: 9px;
@@ -1165,6 +1201,8 @@ def main() -> int:
             window.setWindowTitle(f"{APP_NAME} \u2014 {APP_SUBTITLE}")
             stacked.setCurrentIndex(empty_idx)
 
+        scheduled_tasks[:] = [t for t in scheduled_tasks if t.get("account") != dn]
+
     def on_rename():
         row = account_list.currentRow()
         dn = dir_name_for_row(row)
@@ -1379,6 +1417,303 @@ def main() -> int:
             simulate_file_drop(captured_view, captured_paths)
 
         QTimer.singleShot(8000, do_file_drop)
+
+    # ── 定时发布（内存队列 + 1s 调度，与 README 一致） ──
+    def qdt_to_datetime(qdt: QDateTime) -> datetime:
+        if qdt is None:
+            return datetime.now()
+        try:
+            if hasattr(qdt, "toPython"):
+                py = qdt.toPython()
+                if isinstance(py, datetime):
+                    return py
+        except Exception:
+            pass
+        return datetime.fromtimestamp(qdt.toSecsSinceEpoch())
+
+    def tick_scheduled():
+        """每秒最多执行一条到期任务，避免同账号并发自动化。"""
+        now = datetime.now()
+        due = [t for t in scheduled_tasks if t.get("status") == "pending" and t.get("run_at") and now >= t["run_at"]]
+        if not due:
+            return
+        due.sort(key=lambda x: x["run_at"])
+        task = due[0]
+        scheduled_tasks.remove(task)
+        acc = task["account"]
+        label = dir_to_display.get(acc, acc)
+        show_toast(f"\u5b9a\u65f6\u4efb\u52a1\u5f00\u59cb: {label}", "#6366F1", 4000)
+        api_log(f"\u23f0 \u5b9a\u65f6\u89e6\u53d1  \u8d26\u53f7={acc}")
+        handle_openclaw_publish(acc, task["file_paths"], task["caption"], task["post_type"])
+
+    def on_create_scheduled_task():
+        if account_list.count() == 0:
+            QMessageBox.warning(window, "\u63d0\u793a", "\u8bf7\u5148\u5728\u5de6\u4fa7\u521b\u5efa\u8d26\u53f7")
+            return
+
+        dlg = QDialog(window)
+        dlg.setWindowTitle("\u521b\u5efa\u81ea\u52a8\u4efb\u52a1")
+        dlg.resize(500, 460)
+        dlg.setStyleSheet(
+            """
+            QDialog { background: #18181B; }
+            QLabel { color: #E4E4E7; font-size: 12px; }
+            QTextEdit { background: #09090B; color: #FAFAFA; border: 1px solid #27272A; border-radius: 6px; }
+            QComboBox, QDateTimeEdit { background: #09090B; color: #FAFAFA; border: 1px solid #27272A;
+                border-radius: 6px; padding: 6px; min-height: 26px; }
+            QRadioButton { color: #A1A1AA; }
+            QPushButton { background: #27272A; color: #E4E4E7; border: 1px solid #3F3F46; border-radius: 6px; padding: 6px 14px; }
+            QPushButton:hover { background: #6366F1; color: #FFFFFF; border-color: #6366F1; }
+        """
+        )
+
+        root = QVBoxLayout(dlg)
+        form = QFormLayout()
+
+        combo = QComboBox()
+        for i in range(account_list.count()):
+            item = account_list.item(i)
+            combo.addItem(item.text(), item.data(Qt.UserRole))
+
+        files_row = QHBoxLayout()
+        pick_btn = QPushButton("\u9009\u62e9\u6587\u4ef6\u2026")
+        path_display = QLabel("\uff08\u672a\u9009\u62e9\uff09")
+        path_display.setWordWrap(True)
+        path_display.setStyleSheet("color:#71717A;")
+        chosen_paths: list = []
+
+        def _pick():
+            paths, _ = QFileDialog.getOpenFileNames(
+                window,
+                "\u9009\u62e9\u8981\u53d1\u5e03\u7684\u6587\u4ef6",
+                str(Path.home()),
+            )
+            if paths:
+                chosen_paths.clear()
+                chosen_paths.extend(paths)
+                short = ", ".join(Path(p).name for p in paths[:3])
+                if len(paths) > 3:
+                    short += f" \u7b49 {len(paths)} \u4e2a\u6587\u4ef6"
+                path_display.setText(short)
+                path_display.setStyleSheet("color:#E4E4E7;")
+
+        pick_btn.clicked.connect(_pick)
+        files_row.addWidget(pick_btn, 0)
+        files_row.addWidget(path_display, 1)
+        form.addRow("\u8d26\u53f7", combo)
+        form.addRow("\u6587\u4ef6", files_row)
+
+        cap = QTextEdit()
+        cap.setPlaceholderText("\u6587\u6848\uff08\u53ef\u9009\uff09")
+        cap.setMaximumHeight(80)
+        form.addRow("\u6587\u6848", cap)
+
+        pt_layout = QHBoxLayout()
+        rb_vid = QRadioButton("\u89c6\u9891")
+        rb_img = QRadioButton("\u56fe\u6587")
+        rb_vid.setChecked(True)
+        pt_layout.addWidget(rb_vid)
+        pt_layout.addWidget(rb_img)
+        form.addRow("\u7c7b\u578b", pt_layout)
+
+        mode_row = QHBoxLayout()
+        rb_now = QRadioButton("\u7acb\u5373\u53d1\u5e03")
+        rb_later = QRadioButton("\u5b9a\u65f6\u53d1\u5e03")
+        rb_now.setChecked(True)
+        mode_row.addWidget(rb_now)
+        mode_row.addWidget(rb_later)
+        form.addRow("\u6a21\u5f0f", mode_row)
+
+        dt_edit = QDateTimeEdit(QDateTime.currentDateTime().addSecs(300))
+        dt_edit.setCalendarPopup(True)
+        dt_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
+        dt_edit.setLocale(QLocale(QLocale.Chinese, QLocale.China))
+        dt_edit.setEnabled(False)
+
+        def _toggle_sched():
+            dt_edit.setEnabled(rb_later.isChecked())
+
+        rb_now.toggled.connect(_toggle_sched)
+        rb_later.toggled.connect(_toggle_sched)
+        form.addRow("\u8ba1\u5212\u65f6\u95f4", dt_edit)
+
+        root.addLayout(form)
+
+        btn_row = QHBoxLayout()
+        ok_btn = QPushButton("\u786e\u5b9a")
+        cancel_btn = QPushButton("\u53d6\u6d88")
+        btn_row.addStretch()
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        root.addLayout(btn_row)
+
+        def _accept():
+            if not chosen_paths:
+                QMessageBox.warning(dlg, "\u63d0\u793a", "\u8bf7\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u6587\u4ef6")
+                return
+            fps = ",".join(chosen_paths)
+            post_type = "image" if rb_img.isChecked() else "video"
+            caption_text = cap.toPlainText().strip()
+            account_dir = combo.currentData()
+
+            if rb_now.isChecked():
+                dlg.accept()
+                label = dir_to_display.get(account_dir, account_dir)
+                show_toast(f"\u7acb\u5373\u53d1\u5e03: {label}", "#10B981", 3500)
+                handle_openclaw_publish(account_dir, fps, caption_text, post_type)
+                return
+
+            qdt = dt_edit.dateTime()
+            run_at = qdt_to_datetime(qdt)
+            if run_at <= datetime.now():
+                QMessageBox.warning(
+                    dlg,
+                    "\u63d0\u793a",
+                    "\u5b9a\u65f6\u65f6\u95f4\u5fc5\u987b\u665a\u4e8e\u5f53\u524d\u65f6\u95f4",
+                )
+                return
+            scheduled_tasks.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "account": account_dir,
+                    "file_paths": fps,
+                    "caption": caption_text,
+                    "post_type": post_type,
+                    "run_at": run_at,
+                    "status": "pending",
+                }
+            )
+            dlg.accept()
+            show_toast("\u5df2\u52a0\u5165\u6392\u671f\u961f\u5217", "#6366F1", 3000)
+
+        ok_btn.clicked.connect(_accept)
+        cancel_btn.clicked.connect(dlg.reject)
+
+        dlg.exec()
+
+    def on_open_task_queue():
+        dlg = QDialog(window)
+        dlg.setWindowTitle("\u6392\u671f\u7ba1\u7406")
+        dlg.resize(800, 460)
+        dlg.setStyleSheet(
+            """
+            QDialog { background: #18181B; }
+            QLabel { color: #E4E4E7; }
+            QTableWidget { background: #09090B; color: #E4E4E7; gridline-color: #27272A;
+                border: 1px solid #27272A; border-radius: 6px; }
+            QHeaderView::section { background: #18181B; color: #A1A1AA; padding: 6px; border: none; }
+            QPushButton { background: #27272A; color: #E4E4E7; border: 1px solid #3F3F46;
+                border-radius: 6px; padding: 6px 14px; }
+            QPushButton:hover { background: #6366F1; color: #FFFFFF; border-color: #6366F1; }
+        """
+        )
+        vl = QVBoxLayout(dlg)
+        hint = QLabel(
+            "\u672c\u6b21\u8fd0\u884c\u5185\u5b58\u50a8\uff0c\u9000\u51fa\u8f6f\u4ef6\u540e\u6e05\u7a7a\u3002"
+        )
+        hint.setStyleSheet("color:#52525B; font-size:11px;")
+        vl.addWidget(hint)
+
+        table = QTableWidget(0, 4)
+        table.setHorizontalHeaderLabels(
+            [
+                "\u8ba1\u5212\u65f6\u95f4",
+                "\u8d26\u53f7",
+                "\u7c7b\u578b",
+                "\u6587\u4ef6\u6458\u8981",
+            ]
+        )
+        hdr = table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.Stretch)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        vl.addWidget(table)
+
+        btn_row = QHBoxLayout()
+        refresh_btn = QPushButton("\u5237\u65b0")
+        run_btn = QPushButton("\u7acb\u5373\u6267\u884c\u9009\u4e2d")
+        cancel_btn = QPushButton("\u53d6\u6d88\u9009\u4e2d")
+        close_btn = QPushButton("\u5173\u95ed")
+        btn_row.addWidget(refresh_btn)
+        btn_row.addWidget(run_btn)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        vl.addLayout(btn_row)
+
+        def refresh():
+            table.setRowCount(0)
+            for t in scheduled_tasks:
+                if t.get("status") != "pending":
+                    continue
+                row = table.rowCount()
+                table.insertRow(row)
+                ra = t["run_at"]
+                ts = ra.strftime("%Y-%m-%d %H:%M:%S") if isinstance(ra, datetime) else str(ra)
+                acc = t["account"]
+                disp = dir_to_display.get(acc, acc)
+                fp = t["file_paths"]
+                if len(fp) > 80:
+                    fp = fp[:77] + "..."
+                it0 = QTableWidgetItem(ts)
+                it0.setData(Qt.UserRole, t["id"])
+                table.setItem(row, 0, it0)
+                table.setItem(row, 1, QTableWidgetItem(disp))
+                table.setItem(row, 2, QTableWidgetItem(t.get("post_type", "")))
+                table.setItem(row, 3, QTableWidgetItem(fp))
+
+        def selected_id():
+            r = table.currentRow()
+            if r < 0:
+                return None
+            it = table.item(r, 0)
+            return it.data(Qt.UserRole) if it else None
+
+        def do_run():
+            tid = selected_id()
+            if not tid:
+                QMessageBox.information(dlg, "\u63d0\u793a", "\u8bf7\u9009\u62e9\u4e00\u884c")
+                return
+            found = None
+            for t in scheduled_tasks:
+                if t.get("id") == tid:
+                    found = t
+                    break
+            if not found:
+                refresh()
+                return
+            scheduled_tasks.remove(found)
+            refresh()
+            handle_openclaw_publish(found["account"], found["file_paths"], found["caption"], found["post_type"])
+            show_toast("\u5df2\u7acb\u5373\u6267\u884c\u6392\u671f\u4efb\u52a1", "#22C55E", 3000)
+
+        def do_cancel():
+            tid = selected_id()
+            if not tid:
+                QMessageBox.information(dlg, "\u63d0\u793a", "\u8bf7\u9009\u62e9\u4e00\u884c")
+                return
+            for i, t in enumerate(scheduled_tasks):
+                if t.get("id") == tid:
+                    scheduled_tasks.pop(i)
+                    break
+            refresh()
+            show_toast("\u5df2\u53d6\u6d88\u6392\u671f\u4efb\u52a1", "#F59E0B", 2500)
+
+        refresh_btn.clicked.connect(refresh)
+        run_btn.clicked.connect(do_run)
+        cancel_btn.clicked.connect(do_cancel)
+        close_btn.clicked.connect(dlg.accept)
+
+        refresh()
+        dlg.exec()
+
+    schedule_timer = QTimer()
+    schedule_timer.timeout.connect(tick_scheduled)
+    schedule_timer.start(1000)
 
     # ── 主线程轮询队列（线程安全的跨线程通信） ──
     def poll_publish_queue():
